@@ -3,68 +3,67 @@ const admin = require("firebase-admin");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 admin.initializeApp();
+const db = admin.firestore();
 
-// Initialize the Gemini AI model
+// Initialize the Gemini AI model from API key in environment config
 const API_KEY = functions.config().generative_ai.api_key;
 const genAI = new GoogleGenerativeAI(API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-/**
- * Firebase Callable Function to generate a website.
- *
- * @param {object} data - The form data from the client.
- * @param {object} context - The authentication context of the user.
- * @returns {Promise<{html: string}>} A promise that resolves with the generated HTML.
- */
 exports.generateWebsite = functions.https.onCall(async (data, context) => {
-  // Optional: Check if the user is authenticated
+  // 1. Check for Authentication
   if (!context.auth) {
     throw new functions.https.HttpsError(
-        "unauthenticated",
-        "You must be logged in to create a website.",
+      "unauthenticated",
+      "You must be logged in to create a website."
     );
   }
 
-  // --- The Magic Prompt ---
-  // This prompt is highly detailed to guide the AI effectively.
+  const userId = context.auth.uid;
+  const { formData } = data; // Expect formData to be passed in
+
+  // 2. Construct the Detailed AI Prompt
   const prompt = `
-    You are an expert web developer. Based on the following JSON data, generate a complete, 
-    single, responsive HTML file for a professional small business website.
+    You are an expert front-end developer specializing in Tailwind CSS.
+    Based on this JSON data: ${JSON.stringify(formData, null, 2)}
 
-    Business Data:
-    ${JSON.stringify(data, null, 2)}
+    Generate a complete, single, responsive HTML file for a professional business website.
 
-    Requirements:
-    1.  **Structure**: Create a standard layout: Header (with business name), Hero section (with a catchy tagline), Services section, About/Contact section, and a simple Footer.
-    2.  **Styling**: Use the Tailwind CSS CDN link in the <head>. Do NOT use any custom CSS in a <style> tag. All styling must be done with Tailwind utility classes directly on the HTML elements. The primary color for buttons, headings, and accents must be ${data.branding.primaryColor}.
-    3.  **Responsiveness**: The layout must be fully responsive and look great on both mobile and desktop screens. Use flexbox or grid for layouts.
-    4.  **Content**: Populate all sections with the provided business data. Create a grid or list for the services, displaying the name, price, and duration for each. Include all contact information. If a Google Maps address is provided, embed it using an iframe.
-    5.  **Code Quality**: The final output should be ONLY the HTML code, starting with <!DOCTYPE html> and ending with </html>. Do not include any explanations, comments, or markdown ticks. The code must be clean, semantic, and production-ready.
+    **Strict Requirements:**
+    1.  **HTML Structure:** Must be a full HTML5 document starting with <!DOCTYPE html>.
+    2.  **Styling:** Use ONLY Tailwind CSS via the official CDN link in the <head>. Do not use any <style> blocks or inline style attributes.
+    3.  **Colors:** The primary brand color is ${formData.branding.primaryColor}. Use this for main buttons, links, and section headers. Use shades of gray for body text and backgrounds.
+    4.  **Responsiveness:** Must look excellent on mobile, tablet, and desktop screens. Use responsive prefixes like md: and lg:.
+    5.  **Sections:** Include a header with the business name, a hero section with a compelling headline, a detailed services section (listing each service with its name, price, and duration), a simple "About Us" section, and a footer with contact information.
+    6.  **Output:** Return ONLY the raw HTML code. Do not include any explanations, comments, or markdown "```html" backticks.
   `;
 
   try {
+    // 3. Call the AI Model
     const result = await model.generateContent(prompt);
     const response = await result.response;
     let htmlContent = response.text();
 
-    // Clean up the response from the AI, removing markdown backticks if they exist
+    // Clean the response just in case markdown is included
     htmlContent = htmlContent.replace(/^```html\n?/, "").replace(/```$/, "");
 
-    // Optional: Save the generated HTML to Firestore for the user
-    const userId = context.auth.uid;
-    await admin.firestore().collection("users").doc(userId).collection("websites").add({
-        formData: data,
-        generatedHtml: htmlContent,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    // 4. Save to Firestore
+    const websiteRef = db.collection("users").doc(userId).collection("websites").doc();
+    await websiteRef.set({
+      formData: formData,
+      generatedHtml: htmlContent,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      isPaid: false, // For future monetization
     });
 
+    // 5. Return HTML to the client
     return { html: htmlContent };
 
   } catch (error) {
-    console.error("AI generation failed:", error);
+    console.error("AI Generation Error:", error);
     throw new functions.https.HttpsError(
-        "internal",
-        "Failed to generate website. Please try again later.",
+      "internal",
+      "The AI failed to generate the website. Please try again."
     );
   }
 });
